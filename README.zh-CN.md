@@ -13,6 +13,7 @@
 ```text
 ├── CMakeLists.txt                   # 顶层 CMake 构建脚本（编译动态库、可视化工具与 C++ 示例）
 ├── pyproject.toml                   # Python 包配置（支持 `pip install -e .`）
+├── LICENSE / NOTICE                 # Apache-2.0 开源许可协议与第三方组件声明
 ├── include/kinectv2_sdk.h           # C 语言接口（`kv2_*`）与 C++17 封装（`kv2::Device`）
 ├── src/kinectv2_sdk.cpp             # C++17 零拷贝多模态运行核心
 ├── src/tools/kinectv2_visualizer.cpp# 30 FPS SDL2 + OpenCV 四分屏桌面实时可视化工具
@@ -142,3 +143,11 @@ xyz_m    = sensor.deproject_depth_to_camera(dx=256, dy=212, depth_mm=2000) # 深
 ```
 
 窗口快捷键：`[R]` 重置骨架背景学习 · `[G]` 切换配准后 Registered RGB-D · `[S]` 保存画面截图 · `[Q / ESC]` 退出并自动熄灭传感器白色指示灯。
+
+---
+
+## 开源许可与第三方组件声明
+
+- **项目源代码**：采用 [Apache License, Version 2.0](LICENSE) 开源许可协议（`Copyright 2026 barrydoooit`）。
+- **`libfreenect2` 补丁**：`patches/libfreenect2_linux_sdk.patch` 对应上游 [OpenKinect/libfreenect2](https://github.com/OpenKinect/libfreenect2)（采用 Apache-2.0 与 GPL-2.0 双许可）。
+- **微软官方 SDK 运行时文件**：本仓库**不包含也不分发**任何微软专有二进制文件与模型文件（如 `vvtechs.dll`、`*.xmplr`、`*.bin`、`*.mshdf`、`*.gbd`）。相关运行时文件须由用户自行从合法安装的官方 Microsoft Kinect for Windows SDK v2.0 提取，并受微软官方许可条款约束；详见 [NOTICE](NOTICE)。

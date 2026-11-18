@@ -13,6 +13,7 @@ Low-overhead native Linux C/C++17 and zero-copy Python SDK for the **Microsoft K
 ```text
 ├── CMakeLists.txt                   # CMake build for libkinectv2_sdk.so, visualizer, and C++ demo
 ├── pyproject.toml                   # PEP 621 Python package (`pip install -e .`)
+├── LICENSE / NOTICE                 # Apache-2.0 license and third-party attribution notices
 ├── include/kinectv2_sdk.h           # Public C ABI (`kv2_*`) & C++17 RAII wrapper (`kv2::Device`)
 ├── src/kinectv2_sdk.cpp             # Zero-copy multi-modal C++17 runtime
 ├── src/tools/kinectv2_visualizer.cpp# 30 FPS SDL2 + OpenCV 4-pane desktop visualizer
@@ -170,3 +171,11 @@ int main() {
 ```
 
 Hotkeys: `[R]` Reset skeleton background learner · `[G]` Toggle Registered RGB-D view · `[S]` Save PNG snapshot · `[Q / ESC]` Quit cleanly (automatically turns off the sensor status LED).
+
+---
+
+## License & Third-Party Notice
+
+- **Source Code**: Licensed under the [Apache License, Version 2.0](LICENSE) (`Copyright 2026 barrydoooit`).
+- **`libfreenect2` Patch**: `patches/libfreenect2_linux_sdk.patch` applies to [OpenKinect/libfreenect2](https://github.com/OpenKinect/libfreenect2), which is dual-licensed under Apache-2.0 and GPL-2.0.
+- **Microsoft Kinect SDK Runtime Assets**: This repository does **not** distribute any proprietary Microsoft DLLs or model files (`vvtechs.dll`, `*.xmplr`, `*.bin`, `*.mshdf`, `*.gbd`). Users stage those files from their own legitimately installed copy of the official Microsoft Kinect for Windows SDK v2.0 under Microsoft's applicable license terms. See [NOTICE](NOTICE) for details.

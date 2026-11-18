@@ -1,0 +1,29 @@
+pykinectskel2
+Copyright 2026 barrydoooit
+
+This product includes software developed for the pykinectskel2 project
+(https://github.com/barrydoooit/pykinectskel2), licensed under the
+Apache License, Version 2.0.
+
+------------------------------------------------------------------------
+Third-Party Notices
+------------------------------------------------------------------------
+
+1. OpenKinect libfreenect2 Patch (patches/libfreenect2_linux_sdk.patch)
+   The patch file under patches/ applies to libfreenect2
+   (https://github.com/OpenKinect/libfreenect2), Copyright (c) Individual
+   OpenKinect contributors, which is dual-licensed under the Apache
+   License, Version 2.0 and the GNU General Public License v2.0.
+
+2. Microsoft Kinect for Windows SDK v2.0 Runtime Assets (Not Distributed)
+   This repository does NOT contain or distribute any proprietary
+   Microsoft binaries, DLLs, or machine-learning model files (such as
+   vvtechs.dll, *.xmplr, *.bin, *.mshdf, or *.gbd). Users must obtain
+   those runtime files directly from their own legitimately installed
+   copy of the official Microsoft Kinect for Windows SDK v2.0, which
+   remains governed by Microsoft's applicable license terms.
+
+   Microsoft, Windows, Xbox, and Kinect are trademarks of the Microsoft
+   group of companies. This project is an independent open-source
+   interoperability layer and is neither affiliated with nor endorsed by
+   Microsoft Corporation.
