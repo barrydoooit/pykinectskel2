@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pykinectskel2"
+version = "1.0.0"
+description = "Zero-copy Linux C/C++ and Python SDK for Microsoft Kinect v2 multi-modal streaming and 25-joint 3D body tracking"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.22",
+]
+
+[project.urls]
+Homepage = "https://github.com/barrydoooit/pykinectskel2"
+Repository = "https://github.com/barrydoooit/pykinectskel2.git"
+
+[project.scripts]
+kinectv2-demo = "kinectv2_sdk.cli:run_demo"
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]

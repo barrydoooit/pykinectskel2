@@ -1,0 +1,13 @@
+.venv/
+build/
+bin/
+lib/
+dist/
+__pycache__/
+*.py[cod]
+*.egg-info/
+python/*.egg-info/
+*.pdb
+*.npz
+!tests/golden_fixture_v1.npz
+kinectv2_snapshot.png

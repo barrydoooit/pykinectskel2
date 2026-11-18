@@ -1,0 +1,90 @@
+diff --git a/include/internal/libfreenect2/protocol/command.h b/include/internal/libfreenect2/protocol/command.h
+index 3d37d18..7f8c16c 100644
+--- a/include/internal/libfreenect2/protocol/command.h
++++ b/include/internal/libfreenect2/protocol/command.h
+@@ -259,8 +259,8 @@ struct ColorSettingCommand : public Command<KCMD_RGB_SETTING, ColorSettingRespon
+ #define LedSettingResponseSize  0
+ struct LedSettingCommand : public libfreenect2::protocol::Command<KCMD_LED_SETTING, LedSettingResponseSize, LedSettingResponseSize, 4>
+ {
+-  LedSettingCommand(LedSettings led)
+-    : Command<KCMD_LED_SETTING, LedSettingResponseSize, LedSettingResponseSize, 4>(0)  // seq always zero
++  LedSettingCommand(uint32_t seq, LedSettings led)
++    : Command<KCMD_LED_SETTING, LedSettingResponseSize, LedSettingResponseSize, 4>(seq)
+   {
+     memcpy(this->data_.parameters, &led, sizeof(led));
+   }
+diff --git a/src/libfreenect2.cpp b/src/libfreenect2.cpp
+index 631a578..a643e0e 100644
+--- a/src/libfreenect2.cpp
++++ b/src/libfreenect2.cpp
+@@ -814,8 +814,13 @@ float Freenect2DeviceImpl::getColorSettingFloat(ColorSettingCommandType cmd)
+ 
+ void Freenect2DeviceImpl::setLedStatus(LedSettings led)
+ {
++  if (state_ != Open && state_ != Streaming) return;
++  if (state_ == Open)
++    usb_control_.setVideoTransferFunctionState(UsbControl::Enabled);
+   CommandTransaction::Result result;
+-  command_tx_.execute(LedSettingCommand(led), result);
++  command_tx_.execute(LedSettingCommand(nextCommandSeq(), led), result);
++  if (state_ == Open)
++    usb_control_.setVideoTransferFunctionState(UsbControl::Disabled);
+ }
+ 
+ bool Freenect2DeviceImpl::open()
+@@ -1043,8 +1048,10 @@ bool Freenect2DeviceImpl::close()
+   }
+ 
+   CommandTransaction::Result result;
+-  command_tx_.execute(SetModeEnabledWith0x00640064Command(nextCommandSeq()), result);
++  usb_control_.setVideoTransferFunctionState(UsbControl::Enabled);
++  command_tx_.execute(SetModeEnabledCommand(nextCommandSeq()), result);
+   command_tx_.execute(SetModeDisabledCommand(nextCommandSeq()), result);
++  usb_control_.setVideoTransferFunctionState(UsbControl::Disabled);
+   /* This command actually reboots the device and makes it disappear for 3 seconds.
+    * Protonect can restart instantly without it.
+    */
+diff --git a/src/opencl_depth_packet_processor.cpp b/src/opencl_depth_packet_processor.cpp
+index d8db14d..d0be9dc 100644
+--- a/src/opencl_depth_packet_processor.cpp
++++ b/src/opencl_depth_packet_processor.cpp
+@@ -251,7 +251,7 @@ public:
+     newIrFrame();
+     newDepthFrame();
+ 
+-    const int CL_ICDL_VERSION = 2;
++    const int FN2_CL_ICDL_VERSION = 2;
+     typedef cl_int (*icdloader_func)(int, size_t, void*, size_t*);
+ #ifdef _MSC_VER
+ #pragma warning(push)
+@@ -269,7 +269,7 @@ public:
+     if (clGetICDLoaderInfoOCLICD != NULL)
+     {
+       char buf[16];
+-      if (clGetICDLoaderInfoOCLICD(CL_ICDL_VERSION, sizeof(buf), buf, NULL) == CL_SUCCESS)
++      if (clGetICDLoaderInfoOCLICD(FN2_CL_ICDL_VERSION, sizeof(buf), buf, NULL) == CL_SUCCESS)
+       {
+         if (strcmp(buf, "2.2.4") < 0 && strlen(buf) <= 5)
+           LOG_WARNING << "Your ocl-icd has deadlock bugs. Update to 2.2.4+ is recommended.";
+diff --git a/src/opencl_kde_depth_packet_processor.cpp b/src/opencl_kde_depth_packet_processor.cpp
+index 98dbdff..e51d975 100644
+--- a/src/opencl_kde_depth_packet_processor.cpp
++++ b/src/opencl_kde_depth_packet_processor.cpp
+@@ -259,7 +259,7 @@ public:
+     newIrFrame();
+     newDepthFrame();
+ 
+-    const int CL_ICDL_VERSION = 2;
++    const int FN2_CL_ICDL_VERSION = 2;
+     typedef cl_int (*icdloader_func)(int, size_t, void*, size_t*);
+ #ifdef _MSC_VER
+ #pragma warning(push)
+@@ -277,7 +277,7 @@ public:
+     if (clGetICDLoaderInfoOCLICD != NULL)
+     {
+       char buf[16];
+-      if (clGetICDLoaderInfoOCLICD(CL_ICDL_VERSION, sizeof(buf), buf, NULL) == CL_SUCCESS)
++      if (clGetICDLoaderInfoOCLICD(FN2_CL_ICDL_VERSION, sizeof(buf), buf, NULL) == CL_SUCCESS)
+       {
+         if (strcmp(buf, "2.2.4") < 0)
+           LOG_WARNING << "Your ocl-icd has deadlock bugs. Update to 2.2.4+ is recommended.";
