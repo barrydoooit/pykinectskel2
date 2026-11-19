@@ -4,6 +4,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(_WIN32) || defined(__CYGWIN__)
+#  if defined(KV2_SDK_EXPORTS)
+#    define KV2_API __declspec(dllexport)
+#  elif defined(KV2_SDK_STATIC)
+#    define KV2_API
+#  else
+#    define KV2_API __declspec(dllimport)
+#  endif
+#elif defined(__GNUC__) && __GNUC__ >= 4
+#  define KV2_API __attribute__((visibility("default")))
+#else
+#  define KV2_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -126,47 +140,47 @@ typedef struct Kv2Config {
     const char* serial;         /* NULL = open first available Kinect v2 */
     int32_t     pipeline;       /* Kv2PipelineType (default: KV2_PIPELINE_AUTO) */
     uint32_t    stream_flags;   /* Bitmask of Kv2StreamFlags (default: KV2_STREAM_DEFAULT) */
-    const char* worker_exe;     /* NULL = auto-locate dist/kinectv2_linux_bundle/vvtechs_worker.exe */
+    const char* worker_exe;     /* NULL = auto-locate staged vvtechs_worker.exe */
     const char* dll_dir;        /* NULL = same directory as worker_exe */
-    const char* wine_binary;    /* NULL = auto-locate wine64 */
-    const char* wineprefix;     /* NULL = default $HOME/.wine-kinectv2 */
+    const char* wine_binary;    /* Linux: NULL = auto-locate wine64; Windows: unused (pass NULL) */
+    const char* wineprefix;     /* Linux: NULL = $HOME/.wine-kinectv2; Windows: unused (pass NULL) */
     int32_t     mirror_skeleton;/* 0 = native selfie alignment (recommended), 1 = horizontal flip */
 } Kv2Config;
 
 typedef struct Kv2Device Kv2Device;
 
-void       kv2_default_config(Kv2Config* out_cfg);
-Kv2Device* kv2_open(const Kv2Config* cfg, char* err_buf, size_t err_cap);
-void       kv2_close(Kv2Device* dev);
+KV2_API void        kv2_default_config(Kv2Config* out_cfg);
+KV2_API Kv2Device*  kv2_open(const Kv2Config* cfg, char* err_buf, size_t err_cap);
+KV2_API void        kv2_close(Kv2Device* dev);
 
-int        kv2_start(Kv2Device* dev, char* err_buf, size_t err_cap);
-void       kv2_stop(Kv2Device* dev);
+KV2_API int         kv2_start(Kv2Device* dev, char* err_buf, size_t err_cap);
+KV2_API void        kv2_stop(Kv2Device* dev);
 
 /* Blocks up to timeout_ms for a newer frame than last_seq; returns 1 on success, 0 on timeout, <0 on error. */
-int        kv2_wait_frame(Kv2Device* dev, uint64_t last_seq, int32_t timeout_ms, Kv2FrameView* out_frame);
+KV2_API int         kv2_wait_frame(Kv2Device* dev, uint64_t last_seq, int32_t timeout_ms, Kv2FrameView* out_frame);
 /* Non-blocking grab of the most recent completed frame; returns 1 if available, 0 if none yet. */
-int        kv2_get_latest_frame(Kv2Device* dev, Kv2FrameView* out_frame);
-void       kv2_release_frame(Kv2Device* dev, Kv2FrameView* frame);
+KV2_API int         kv2_get_latest_frame(Kv2Device* dev, Kv2FrameView* out_frame);
+KV2_API void        kv2_release_frame(Kv2Device* dev, Kv2FrameView* frame);
 
 /* Reset vvtechs.dll temporal skeleton & 15-frame background state. */
-int        kv2_reset_skeleton(Kv2Device* dev);
-void       kv2_set_registered_color_enabled(Kv2Device* dev, int enabled);
-void       kv2_get_memory_rss_mb(const Kv2Device* dev, float* out_host_rss_mb, float* out_worker_rss_mb);
+KV2_API int         kv2_reset_skeleton(Kv2Device* dev);
+KV2_API void        kv2_set_registered_color_enabled(Kv2Device* dev, int enabled);
+KV2_API void        kv2_get_memory_rss_mb(const Kv2Device* dev, float* out_host_rss_mb, float* out_worker_rss_mb);
 
 /* Camera intrinsics and coordinate projection utilities (thread-safe after kv2_open). */
-const char* kv2_get_serial(const Kv2Device* dev);
-const char* kv2_get_pipeline_name(const Kv2Device* dev);
-void        kv2_get_intrinsics(const Kv2Device* dev, Kv2IrIntrinsics* out_ir, Kv2ColorIntrinsics* out_color);
+KV2_API const char* kv2_get_serial(const Kv2Device* dev);
+KV2_API const char* kv2_get_pipeline_name(const Kv2Device* dev);
+KV2_API void        kv2_get_intrinsics(const Kv2Device* dev, Kv2IrIntrinsics* out_ir, Kv2ColorIntrinsics* out_color);
 
 /* Project 3D CameraSpace point (meters, +X right in selfie, +Y up, +Z forward) onto 512x424 Depth & 1920x1080 Color. */
-void        kv2_project_camera_to_depth(const Kv2Device* dev, const float pos_xyz[3], float out_uv[2]);
-void        kv2_project_camera_to_color(const Kv2Device* dev, const float pos_xyz[3], float out_uv[2]);
+KV2_API void        kv2_project_camera_to_depth(const Kv2Device* dev, const float pos_xyz[3], float out_uv[2]);
+KV2_API void        kv2_project_camera_to_color(const Kv2Device* dev, const float pos_xyz[3], float out_uv[2]);
 /* Map a 512x424 Depth pixel (dx, dy) with depth_mm > 0 onto 1920x1080 Color pixel (cx, cy). */
-int         kv2_map_depth_to_color(const Kv2Device* dev, int dx, int dy, float depth_mm, float out_color_uv[2]);
+KV2_API int         kv2_map_depth_to_color(const Kv2Device* dev, int dx, int dy, float depth_mm, float out_color_uv[2]);
 /* Back-project a 512x424 Depth pixel (dx, dy, depth_mm) into 3D CameraSpace meters (X, Y, Z). */
-int         kv2_deproject_depth_to_camera(const Kv2Device* dev, int dx, int dy, float depth_mm, float out_xyz[3]);
+KV2_API int         kv2_deproject_depth_to_camera(const Kv2Device* dev, int dx, int dy, float depth_mm, float out_xyz[3]);
 
-const char* kv2_joint_name(int joint_index);
+KV2_API const char* kv2_joint_name(int joint_index);
 
 #ifdef __cplusplus
 } /* extern "C" */

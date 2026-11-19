@@ -1,5 +1,5 @@
 """
-kinectv2_sdk: Native Linux C/C++ and zero-copy Python SDK for Microsoft Kinect v2.
+kinectv2_sdk: Cross-platform Linux and Windows C/C++ and zero-copy Python SDK for Microsoft Kinect v2.
 
 Provides locked 30.0 FPS streaming of 1080p RGB, 512x424 millimeter Depth, Infrared,
 Registered RGB-D, BodyIndex segmentation masks, and 25-joint 3D skeletons matching the
@@ -43,7 +43,7 @@ from .tracker import (
     TrackedBody,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "__version__",

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pykinectskel2"
-version = "1.0.0"
-description = "Zero-copy Linux C/C++ and Python SDK for Microsoft Kinect v2 multi-modal streaming and 25-joint 3D body tracking"
+version = "1.1.0"
+description = "Zero-copy Linux and Windows C/C++ and Python SDK for Microsoft Kinect v2 multi-modal streaming and 25-joint 3D body tracking"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

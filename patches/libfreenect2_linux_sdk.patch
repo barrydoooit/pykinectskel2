@@ -1,3 +1,26 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d8ef047..c80ee3c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-CMAKE_MINIMUM_REQUIRED(VERSION 2.8.12.1)
++CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
+ 
+ SET(PROJECT_VER_MAJOR 0)
+ SET(PROJECT_VER_MINOR 2)
+diff --git a/cmake_modules/GenerateResources.cmake b/cmake_modules/GenerateResources.cmake
+index 8616e38..caab966 100644
+--- a/cmake_modules/GenerateResources.cmake
++++ b/cmake_modules/GenerateResources.cmake
+@@ -6,7 +6,7 @@ ADD_EXECUTABLE(generate_resources_tool
+ 
+ ADD_CUSTOM_COMMAND(
+   OUTPUT ${OUTPUT}
+-  COMMAND generate_resources_tool ${BASE_FOLDER} ${ARGN} > ${OUTPUT}
++  COMMAND generate_resources_tool "${BASE_FOLDER}" ${ARGN} > "${OUTPUT}"
+   WORKING_DIRECTORY ${BASE_FOLDER}
+   DEPENDS generate_resources_tool ${ARGN}
+ )
 diff --git a/include/internal/libfreenect2/protocol/command.h b/include/internal/libfreenect2/protocol/command.h
 index 3d37d18..7f8c16c 100644
 --- a/include/internal/libfreenect2/protocol/command.h

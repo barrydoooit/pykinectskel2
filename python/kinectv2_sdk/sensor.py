@@ -1,5 +1,5 @@
 """
-Zero-copy Python binding for `libkinectv2_sdk.so` (Native Linux C/C++ Kinect v2 SDK).
+Zero-copy Python binding for `libkinectv2_sdk.so` (Linux x86_64) and `kinectv2_sdk.dll` (Windows x64).
 
 Provides locked 30.0 FPS multi-modal streaming (1080p RGB, 512x424 Depth, IR, Registered RGB-D,
 BodyIndex mask, and 25-joint 3D Skeletons with pre-projected 2D Depth & Color pixel coordinates)
@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import os
+import sys
 from ctypes import (
     POINTER,
     Structure,
@@ -199,24 +200,89 @@ class _CKv2Config(Structure):
     ]
 
 
+_ADDED_DLL_DIRS: dict[str, object] = {}
+
+
+def _register_win32_dll_dirs(resolved_lib: str, dll_dir: Optional[os.PathLike | str] = None) -> None:
+    if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
+        return
+
+    candidates: List[Path] = []
+    lib_p = Path(resolved_lib)
+    if lib_p.parent.is_dir():
+        candidates.append(lib_p.parent)
+        sibling_fn2 = lib_p.parent.parent / "freenect2" / "bin"
+        if sibling_fn2.is_dir():
+            candidates.append(sibling_fn2)
+
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        rt_root = Path(local_appdata) / "kinectv2-runtime"
+        candidates.append(rt_root / "bin")
+        candidates.append(rt_root / "freenect2" / "bin")
+
+    fn2_env = os.environ.get("FREENECT2_ROOT")
+    if fn2_env:
+        candidates.append(Path(fn2_env) / "bin")
+
+    if dll_dir is not None:
+        candidates.append(Path(dll_dir).expanduser())
+
+    for cand in candidates:
+        try:
+            if not cand.is_dir():
+                continue
+            norm = os.path.normcase(str(cand.resolve()))
+            if norm not in _ADDED_DLL_DIRS:
+                _ADDED_DLL_DIRS[norm] = os.add_dll_directory(str(cand.resolve()))
+        except OSError:
+            continue
+
+
 def _resolve_lib_path(lib_path: Optional[os.PathLike | str]) -> str:
     if lib_path is not None:
         return str(Path(lib_path).expanduser().resolve())
     env_lib = os.environ.get("KINECTV2_SDK_LIB")
     if env_lib:
         return str(Path(env_lib).expanduser().resolve())
+
     repo_root = Path(__file__).resolve().parents[2]
+    if sys.platform == "win32":
+        win_candidates = [
+            repo_root / "bin" / "kinectv2_sdk.dll",
+            repo_root / "lib" / "kinectv2_sdk.dll",
+        ]
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            win_candidates.append(Path(local_appdata) / "kinectv2-runtime" / "bin" / "kinectv2_sdk.dll")
+        for cand in win_candidates:
+            if cand.is_file():
+                return str(cand.resolve())
+        sys_lib = ctypes.util.find_library("kinectv2_sdk")
+        if sys_lib:
+            return sys_lib
+        if local_appdata and (Path(local_appdata) / "kinectv2-runtime").exists():
+            return str(Path(local_appdata) / "kinectv2-runtime" / "bin" / "kinectv2_sdk.dll")
+        return str(repo_root / "bin" / "kinectv2_sdk.dll")
+
     local_candidate = repo_root / "lib" / "libkinectv2_sdk.so"
     if local_candidate.is_file():
         return str(local_candidate)
+    runtime_candidate = Path.home() / ".local" / "share" / "kinectv2-runtime" / "lib" / "libkinectv2_sdk.so"
+    if runtime_candidate.is_file():
+        return str(runtime_candidate)
     sys_lib = ctypes.util.find_library("kinectv2_sdk")
     if sys_lib:
         return sys_lib
     return str(local_candidate)
 
 
-def _load_sdk_lib(lib_path: Optional[os.PathLike | str] = None) -> ctypes.CDLL:
+def _load_sdk_lib(
+    lib_path: Optional[os.PathLike | str] = None,
+    dll_dir: Optional[os.PathLike | str] = None,
+) -> ctypes.CDLL:
     resolved = _resolve_lib_path(lib_path)
+    _register_win32_dll_dirs(resolved, dll_dir=dll_dir)
     lib = ctypes.CDLL(resolved)
 
     lib.kv2_default_config.argtypes = [POINTER(_CKv2Config)]
@@ -428,7 +494,7 @@ class FrameGuard:
 
 
 class KinectV2Sensor:
-    """High-level zero-copy Python interface to the native C++ `libkinectv2_sdk.so` runtime."""
+    """High-level zero-copy Python interface to `libkinectv2_sdk.so` (Linux) / `kinectv2_sdk.dll` (Windows)."""
 
     def __init__(
         self,
@@ -442,7 +508,7 @@ class KinectV2Sensor:
         wineprefix: Optional[os.PathLike | str] = None,
         lib_path: Optional[os.PathLike | str] = None,
     ) -> None:
-        self._lib = _load_sdk_lib(lib_path)
+        self._lib = _load_sdk_lib(lib_path, dll_dir=dll_dir)
         cfg = _CKv2Config()
         self._lib.kv2_default_config(byref(cfg))
         self._serial_b = serial.encode("utf-8") if serial else None

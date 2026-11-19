@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(kinectv2_sdk VERSION 1.0.0 LANGUAGES C CXX)
+project(kinectv2_sdk VERSION 1.1.0 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
@@ -7,23 +7,38 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-option(KV2_BUILD_VISUALIZER "Build the 30 FPS SDL2 + OpenCV desktop visualizer" ON)
+if(WIN32)
+    set(_KV2_DEFAULT_VISUALIZER OFF)
+else()
+    set(_KV2_DEFAULT_VISUALIZER ON)
+endif()
+
+option(KV2_BUILD_VISUALIZER "Build the 30 FPS SDL2 + OpenCV desktop visualizer" ${_KV2_DEFAULT_VISUALIZER})
 option(KV2_BUILD_EXAMPLES   "Build C++ SDK quickstart example" ON)
 
 if(NOT DEFINED FREENECT2_ROOT)
-    if(EXISTS "$ENV{HOME}/.local/share/kinectv2-runtime/freenect2/lib")
-        set(FREENECT2_ROOT "$ENV{HOME}/.local/share/kinectv2-runtime/freenect2")
+    if(WIN32)
+        if(DEFINED ENV{LOCALAPPDATA})
+            file(TO_CMAKE_PATH "$ENV{LOCALAPPDATA}/kinectv2-runtime/freenect2" _DEFAULT_FN2_WIN)
+            if(EXISTS "${_DEFAULT_FN2_WIN}/include")
+                set(FREENECT2_ROOT "${_DEFAULT_FN2_WIN}")
+            endif()
+        endif()
     else()
-        set(FREENECT2_ROOT "/usr/local")
+        if(EXISTS "$ENV{HOME}/.local/share/kinectv2-runtime/freenect2/lib")
+            set(FREENECT2_ROOT "$ENV{HOME}/.local/share/kinectv2-runtime/freenect2")
+        else()
+            set(FREENECT2_ROOT "/usr/local")
+        endif()
     endif()
 endif()
 
 find_library(FREENECT2_LIB
-    NAMES freenect2
+    NAMES freenect2 libfreenect2 freenect2d
     PATHS "${FREENECT2_ROOT}/lib" "${FREENECT2_ROOT}/lib64"
 )
 if(NOT FREENECT2_LIB)
-    message(FATAL_ERROR "libfreenect2 not found. Pass -DFREENECT2_ROOT=/path/to/freenect2 or run scripts/build_libfreenect2.sh.")
+    message(FATAL_ERROR "libfreenect2 not found. Pass -DFREENECT2_ROOT=/path/to/freenect2 or run scripts/build_libfreenect2.sh (Linux) / scripts/build_windows_sdk.ps1 (Windows).")
 endif()
 
 find_path(FREENECT2_INCLUDE_DIR
@@ -41,6 +56,7 @@ set(SDK_RPATH "${FREENECT2_ROOT}/lib;/usr/local/cuda-12.6/lib64;/usr/local/cuda/
 add_library(kinectv2_sdk SHARED
     src/kinectv2_sdk.cpp
 )
+target_compile_definitions(kinectv2_sdk PRIVATE KV2_SDK_EXPORTS)
 target_include_directories(kinectv2_sdk
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -48,17 +64,40 @@ target_include_directories(kinectv2_sdk
     PRIVATE
         "${FREENECT2_INCLUDE_DIR}"
 )
-target_compile_options(kinectv2_sdk PRIVATE -O3 -Wall -Wextra -Wno-unused-parameter)
-target_link_libraries(kinectv2_sdk PRIVATE "${FREENECT2_LIB}" Threads::Threads ${CMAKE_DL_LIBS})
-set_target_properties(kinectv2_sdk PROPERTIES
-    VERSION ${PROJECT_VERSION}
-    SOVERSION 1
-    BUILD_RPATH "${SDK_RPATH}"
-    INSTALL_RPATH "${CMAKE_INSTALL_FULL_LIBDIR};${SDK_RPATH}"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib"
-)
+if(MSVC)
+    target_compile_options(kinectv2_sdk PRIVATE /O2 /W3 /EHsc /utf-8)
+    target_compile_definitions(kinectv2_sdk PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
+else()
+    target_compile_options(kinectv2_sdk PRIVATE -O3 -Wall -Wextra -Wno-unused-parameter)
+endif()
+
+if(WIN32)
+    target_link_libraries(kinectv2_sdk PRIVATE "${FREENECT2_LIB}" Threads::Threads psapi)
+    set_target_properties(kinectv2_sdk PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib"
+    )
+    foreach(_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+        set_target_properties(kinectv2_sdk PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY_${_cfg} "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+            ARCHIVE_OUTPUT_DIRECTORY_${_cfg} "${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            LIBRARY_OUTPUT_DIRECTORY_${_cfg} "${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        )
+    endforeach()
+else()
+    target_link_libraries(kinectv2_sdk PRIVATE "${FREENECT2_LIB}" Threads::Threads ${CMAKE_DL_LIBS})
+    set_target_properties(kinectv2_sdk PROPERTIES
+        VERSION ${PROJECT_VERSION}
+        SOVERSION 1
+        BUILD_RPATH "${SDK_RPATH}"
+        INSTALL_RPATH "${CMAKE_INSTALL_FULL_LIBDIR};${SDK_RPATH}"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib"
+    )
+endif()
 
 install(TARGETS kinectv2_sdk
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -97,10 +136,25 @@ if(KV2_BUILD_EXAMPLES)
         examples/cpp_sdk_demo.cpp
     )
     target_include_directories(cpp_sdk_demo PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-    target_compile_options(cpp_sdk_demo PRIVATE -O3 -Wall -Wextra)
+    if(MSVC)
+        target_compile_options(cpp_sdk_demo PRIVATE /O2 /W3 /EHsc /utf-8)
+    else()
+        target_compile_options(cpp_sdk_demo PRIVATE -O3 -Wall -Wextra)
+    endif()
     target_link_libraries(cpp_sdk_demo PRIVATE kinectv2_sdk Threads::Threads)
-    set_target_properties(cpp_sdk_demo PROPERTIES
-        BUILD_RPATH "${CMAKE_CURRENT_SOURCE_DIR}/lib;${SDK_RPATH}"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
-    )
+    if(WIN32)
+        set_target_properties(cpp_sdk_demo PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+        )
+        foreach(_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+            set_target_properties(cpp_sdk_demo PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY_${_cfg} "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+            )
+        endforeach()
+    else()
+        set_target_properties(cpp_sdk_demo PROPERTIES
+            BUILD_RPATH "${CMAKE_CURRENT_SOURCE_DIR}/lib;${SDK_RPATH}"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+        )
+    endif()
 endif()

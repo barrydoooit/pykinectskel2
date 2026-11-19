@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import ctypes
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
 import kinectv2_sdk as kv2
 import pykinectskel2 as pks2

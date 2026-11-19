@@ -1,3 +1,28 @@
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  include <psapi.h>
+#  ifdef interface
+#    undef interface
+#  endif
+#else
+#  include <dlfcn.h>
+#  include <errno.h>
+#  include <fcntl.h>
+#  include <glob.h>
+#  include <signal.h>
+#  include <sys/prctl.h>
+#  include <sys/stat.h>
+#  include <sys/uio.h>
+#  include <sys/wait.h>
+#  include <unistd.h>
+#endif
+
 #include "kinectv2_sdk.h"
 
 #include <libfreenect2/frame_listener_impl.h>
@@ -7,20 +32,10 @@
 #include <libfreenect2/packet_pipeline.h>
 #include <libfreenect2/registration.h>
 
-#include <dlfcn.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <glob.h>
 #include <math.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/prctl.h>
-#include <sys/stat.h>
-#include <sys/uio.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -50,23 +65,6 @@ constexpr size_t kDepthCount = (size_t)KV2_DEPTH_WIDTH * KV2_DEPTH_HEIGHT;
 constexpr size_t kRegBytes   = kDepthCount * 4u;
 constexpr int    kNumSlots   = 4;
 
-float read_pid_rss_mb(pid_t pid) {
-    char path[64];
-    if (pid <= 0) {
-        snprintf(path, sizeof(path), "/proc/self/statm");
-    } else {
-        snprintf(path, sizeof(path), "/proc/%d/statm", (int)pid);
-    }
-    FILE* fp = fopen(path, "r");
-    if (!fp) return 0.0f;
-    unsigned long vmsize = 0, rss_pages = 0;
-    int got = fscanf(fp, "%lu %lu", &vmsize, &rss_pages);
-    fclose(fp);
-    if (got != 2) return 0.0f;
-    long page_sz = sysconf(_SC_PAGESIZE);
-    return (float)((double)rss_pages * (double)(page_sz > 0 ? page_sz : 4096) / (1024.0 * 1024.0));
-}
-
 #pragma pack(push, 1)
 struct WireHeader {
     uint32_t magic;
@@ -94,6 +92,163 @@ const char* kJointNames[KV2_JOINT_COUNT] = {
     "SpineShoulder", "HandTipLeft", "ThumbLeft", "HandTipRight", "ThumbRight"
 };
 
+void set_err(char* buf, size_t cap, const std::string& msg) {
+    if (buf && cap > 0) {
+        snprintf(buf, cap, "%s", msg.c_str());
+    }
+}
+
+#ifdef _WIN32
+
+std::wstring utf8_to_wide(const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    if (n <= 0) return std::wstring();
+    std::wstring w((size_t)n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), &w[0], n);
+    return w;
+}
+
+std::string wide_to_utf8(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return std::string();
+    std::string s((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), &s[0], n, nullptr, nullptr);
+    return s;
+}
+
+std::wstring quote_win32_arg(const std::wstring& arg) {
+    if (!arg.empty() && arg.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+        return arg;
+    }
+    std::wstring out = L"\"";
+    for (size_t i = 0; ; ++i) {
+        size_t num_backslashes = 0;
+        while (i < arg.size() && arg[i] == L'\\') {
+            ++i;
+            ++num_backslashes;
+        }
+        if (i == arg.size()) {
+            out.append(num_backslashes * 2, L'\\');
+            break;
+        } else if (arg[i] == L'"') {
+            out.append(num_backslashes * 2 + 1, L'\\');
+            out.push_back(L'"');
+        } else {
+            out.append(num_backslashes, L'\\');
+            out.push_back(arg[i]);
+        }
+    }
+    out.push_back(L'"');
+    return out;
+}
+
+float read_handle_rss_mb(HANDLE hproc) {
+    if (!hproc || hproc == INVALID_HANDLE_VALUE) return 0.0f;
+    PROCESS_MEMORY_COUNTERS pmc{};
+    pmc.cb = sizeof(pmc);
+    if (!GetProcessMemoryInfo(hproc, &pmc, sizeof(pmc))) return 0.0f;
+    return (float)((double)pmc.WorkingSetSize / (1024.0 * 1024.0));
+}
+
+bool file_exists(const std::string& p) {
+    if (p.empty()) return false;
+    DWORD attr = GetFileAttributesW(utf8_to_wide(p).c_str());
+    return attr != INVALID_FILE_ATTRIBUTES;
+}
+
+std::string canonical_path(const std::string& p) {
+    if (p.empty()) return p;
+    wchar_t full_buf[4096] = {0};
+    std::wstring wp = utf8_to_wide(p);
+    if (!wp.empty() && _wfullpath(full_buf, wp.c_str(), 4095) != nullptr) {
+        return wide_to_utf8(full_buf);
+    }
+    return p;
+}
+
+std::string dirname_of(const std::string& p) {
+    size_t pos = p.find_last_of("\\/");
+    if (pos == std::string::npos) return ".";
+    if (pos == 2 && p.size() >= 3 && p[1] == ':') {
+        return p.substr(0, 3);
+    }
+    return (pos == 0) ? p.substr(0, 1) : p.substr(0, pos);
+}
+
+std::string shared_lib_dir() {
+    HMODULE hmod = nullptr;
+    if (GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&kv2_default_config),
+            &hmod) && hmod != nullptr) {
+        wchar_t mod_path[4096] = {0};
+        DWORD n = GetModuleFileNameW(hmod, mod_path, 4095);
+        if (n > 0 && n < 4095) {
+            wchar_t full_buf[4096] = {0};
+            std::string utf8 = (_wfullpath(full_buf, mod_path, 4095) != nullptr)
+                ? wide_to_utf8(full_buf)
+                : wide_to_utf8(mod_path);
+            return dirname_of(utf8);
+        }
+    }
+    return ".";
+}
+
+bool write_exact_handle(HANDLE h, const void* buf, size_t len) {
+    if (h == NULL || h == INVALID_HANDLE_VALUE) return false;
+    const uint8_t* p = static_cast<const uint8_t*>(buf);
+    size_t rem = len;
+    while (rem > 0) {
+        DWORD chunk = (rem > 0x40000000u) ? 0x40000000u : (DWORD)rem;
+        DWORD put = 0;
+        if (!WriteFile(h, p, chunk, &put, NULL) || put == 0) {
+            return false;
+        }
+        p += put;
+        rem -= (size_t)put;
+    }
+    return true;
+}
+
+bool read_exact_handle(HANDLE h, void* buf, size_t len) {
+    if (h == NULL || h == INVALID_HANDLE_VALUE) return false;
+    uint8_t* p = static_cast<uint8_t*>(buf);
+    size_t rem = len;
+    while (rem > 0) {
+        DWORD chunk = (rem > 0x40000000u) ? 0x40000000u : (DWORD)rem;
+        DWORD got = 0;
+        if (!ReadFile(h, p, chunk, &got, NULL) || got == 0) {
+            return false;
+        }
+        p += got;
+        rem -= (size_t)got;
+    }
+    return true;
+}
+
+void ignore_sigpipe_once() {}
+
+#else /* POSIX / Linux */
+
+float read_pid_rss_mb(pid_t pid) {
+    char path[64];
+    if (pid <= 0) {
+        snprintf(path, sizeof(path), "/proc/self/statm");
+    } else {
+        snprintf(path, sizeof(path), "/proc/%d/statm", (int)pid);
+    }
+    FILE* fp = fopen(path, "r");
+    if (!fp) return 0.0f;
+    unsigned long vmsize = 0, rss_pages = 0;
+    int got = fscanf(fp, "%lu %lu", &vmsize, &rss_pages);
+    fclose(fp);
+    if (got != 2) return 0.0f;
+    long page_sz = sysconf(_SC_PAGESIZE);
+    return (float)((double)rss_pages * (double)(page_sz > 0 ? page_sz : 4096) / (1024.0 * 1024.0));
+}
+
 std::once_flag g_sigpipe_once;
 
 void ignore_sigpipe_once() {
@@ -105,15 +260,14 @@ void ignore_sigpipe_once() {
     });
 }
 
-void set_err(char* buf, size_t cap, const std::string& msg) {
-    if (buf && cap > 0) {
-        snprintf(buf, cap, "%s", msg.c_str());
-    }
-}
-
 bool file_exists(const std::string& p) {
     struct stat st;
     return !p.empty() && stat(p.c_str(), &st) == 0;
+}
+
+std::string canonical_path(const std::string& p) {
+    char rb[4096];
+    return realpath(p.c_str(), rb) ? std::string(rb) : p;
 }
 
 std::string dirname_of(const std::string& p) {
@@ -185,6 +339,8 @@ bool read_exact_fd(int fd, void* buf, size_t len) {
     return true;
 }
 
+#endif /* _WIN32 */
+
 class FpsMeter {
 public:
     float tick(double now_sec) {
@@ -247,10 +403,17 @@ struct Kv2Device {
     libfreenect2::Freenect2Device::ColorCameraParams color_params{};
     bool has_calib = false;
 
-    /* Child Wine64 vvtechs_worker process */
+    /* Child vvtechs_worker process (native Win32 process on Windows, Wine64 on Linux) */
+#ifdef _WIN32
+    HANDLE worker_proc = NULL;
+    HANDLE worker_job = NULL;
+    HANDLE worker_stdin_wr = INVALID_HANDLE_VALUE;
+    HANDLE worker_stdout_rd = INVALID_HANDLE_VALUE;
+#else
     pid_t worker_pid = -1;
     int   worker_stdin_fd = -1;
     int   worker_stdout_fd = -1;
+#endif
     std::mutex worker_io_mtx;
     uint32_t worker_frame_counter = 0;
 
@@ -328,7 +491,136 @@ struct Kv2Device {
         out_uv[1] = (wy / color_q) + color_params.cy;
     }
 
+    bool worker_pipes_ready() const {
+#ifdef _WIN32
+        return worker_stdin_wr != INVALID_HANDLE_VALUE && worker_stdout_rd != INVALID_HANDLE_VALUE;
+#else
+        return worker_stdin_fd >= 0 && worker_stdout_fd >= 0;
+#endif
+    }
+
+    bool write_worker_bytes(const void* buf, size_t len) {
+#ifdef _WIN32
+        return write_exact_handle(worker_stdin_wr, buf, len);
+#else
+        return write_exact_fd(worker_stdin_fd, buf, len);
+#endif
+    }
+
+    bool read_worker_bytes(void* buf, size_t len) {
+#ifdef _WIN32
+        return read_exact_handle(worker_stdout_rd, buf, len);
+#else
+        return read_exact_fd(worker_stdout_fd, buf, len);
+#endif
+    }
+
     bool start_worker(std::string& err) {
+#ifdef _WIN32
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+        sa.lpSecurityDescriptor = NULL;
+
+        HANDLE h_in_rd = INVALID_HANDLE_VALUE;
+        HANDLE h_in_wr = INVALID_HANDLE_VALUE;
+        HANDLE h_out_rd = INVALID_HANDLE_VALUE;
+        HANDLE h_out_wr = INVALID_HANDLE_VALUE;
+
+        if (!CreatePipe(&h_in_rd, &h_in_wr, &sa, 1048576) ||
+            !CreatePipe(&h_out_rd, &h_out_wr, &sa, 1048576)) {
+            if (h_in_rd != INVALID_HANDLE_VALUE) CloseHandle(h_in_rd);
+            if (h_in_wr != INVALID_HANDLE_VALUE) CloseHandle(h_in_wr);
+            if (h_out_rd != INVALID_HANDLE_VALUE) CloseHandle(h_out_rd);
+            if (h_out_wr != INVALID_HANDLE_VALUE) CloseHandle(h_out_wr);
+            err = "CreatePipe() failed for vvtechs_worker";
+            return false;
+        }
+
+        SetHandleInformation(h_in_wr, HANDLE_FLAG_INHERIT, 0);
+        SetHandleInformation(h_out_rd, HANDLE_FLAG_INHERIT, 0);
+
+        HANDLE h_nul = CreateFileW(
+            L"NUL",
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &sa,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL
+        );
+
+        std::wstring exe_w = utf8_to_wide(worker_exe_path);
+        std::wstring cmd_w = quote_win32_arg(exe_w) + L" --stdio";
+        std::wstring dlldir_w;
+        if (!dll_dir_path.empty()) {
+            dlldir_w = utf8_to_wide(dll_dir_path);
+            cmd_w += L" --dll-dir " + quote_win32_arg(dlldir_w);
+        }
+        std::vector<wchar_t> cmd_buf(cmd_w.begin(), cmd_w.end());
+        cmd_buf.push_back(L'\0');
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = h_in_rd;
+        si.hStdOutput = h_out_wr;
+        si.hStdError = (h_nul != INVALID_HANDLE_VALUE) ? h_nul : h_out_wr;
+
+        PROCESS_INFORMATION pi{};
+        BOOL created = CreateProcessW(
+            exe_w.c_str(),
+            cmd_buf.data(),
+            NULL,
+            NULL,
+            TRUE,
+            CREATE_NO_WINDOW,
+            NULL,
+            dlldir_w.empty() ? NULL : dlldir_w.c_str(),
+            &si,
+            &pi
+        );
+
+        CloseHandle(h_in_rd);
+        CloseHandle(h_out_wr);
+        if (h_nul != INVALID_HANDLE_VALUE) {
+            CloseHandle(h_nul);
+        }
+
+        if (!created) {
+            DWORD win_err = GetLastError();
+            CloseHandle(h_in_wr);
+            CloseHandle(h_out_rd);
+            err = "CreateProcessW() failed for vvtechs_worker (err=" + std::to_string((unsigned long)win_err) + ")";
+            return false;
+        }
+
+        CloseHandle(pi.hThread);
+
+        HANDLE h_job = CreateJobObjectW(NULL, NULL);
+        if (h_job != NULL) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+            jeli.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            if (SetInformationJobObject(h_job, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli)) &&
+                AssignProcessToJobObject(h_job, pi.hProcess)) {
+                worker_job = h_job;
+            } else {
+                CloseHandle(h_job);
+            }
+        }
+
+        worker_proc = pi.hProcess;
+        worker_stdin_wr = h_in_wr;
+        worker_stdout_rd = h_out_rd;
+        worker_frame_counter = 0;
+
+        if (!send_simple_cmd(KV2_CMD_RESET, nullptr, 0)) {
+            err = "vvtechs_worker failed initial RESET handshake (check vvtechs.dll + model files in dll_dir and Direct3D 11 runtime)";
+            stop_worker();
+            return false;
+        }
+#else
         int in_pipe[2] = {-1, -1};
         int out_pipe[2] = {-1, -1};
         if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0) {
@@ -403,6 +695,7 @@ struct Kv2Device {
             stop_worker();
             return false;
         }
+#endif
         if (has_calib) {
             WireIntrinsics wi{};
             wi.fx = ir_params.fx;
@@ -423,26 +716,57 @@ struct Kv2Device {
 
     bool send_simple_cmd(uint32_t code, const void* payload, uint32_t len) {
         std::lock_guard<std::mutex> lk(worker_io_mtx);
-        if (worker_stdin_fd < 0 || worker_stdout_fd < 0) return false;
+        if (!worker_pipes_ready()) return false;
         WireHeader req{KV2_REQ_MAGIC, code, len, 0u};
-        if (!write_exact_fd(worker_stdin_fd, &req, sizeof(req))) return false;
-        if (len > 0 && !write_exact_fd(worker_stdin_fd, payload, len)) return false;
+        if (!write_worker_bytes(&req, sizeof(req))) return false;
+        if (len > 0 && !write_worker_bytes(payload, len)) return false;
         WireHeader resp{};
-        if (!read_exact_fd(worker_stdout_fd, &resp, sizeof(resp))) return false;
+        if (!read_worker_bytes(&resp, sizeof(resp))) return false;
         if (resp.magic != KV2_RESP_MAGIC) return false;
         if (resp.payload_len > 0) {
             std::vector<uint8_t> tmp(resp.payload_len);
-            if (!read_exact_fd(worker_stdout_fd, tmp.data(), resp.payload_len)) return false;
+            if (!read_worker_bytes(tmp.data(), resp.payload_len)) return false;
         }
         return true;
     }
 
     void stop_worker() {
+#ifdef _WIN32
+        if (worker_proc != NULL) {
+            send_simple_cmd(KV2_CMD_QUIT, nullptr, 0);
+        }
+        {
+            std::lock_guard<std::mutex> lk(worker_io_mtx);
+            if (worker_stdin_wr != INVALID_HANDLE_VALUE) {
+                CloseHandle(worker_stdin_wr);
+                worker_stdin_wr = INVALID_HANDLE_VALUE;
+            }
+            if (worker_stdout_rd != INVALID_HANDLE_VALUE) {
+                CloseHandle(worker_stdout_rd);
+                worker_stdout_rd = INVALID_HANDLE_VALUE;
+            }
+        }
+        if (worker_proc != NULL) {
+            if (WaitForSingleObject(worker_proc, 1000) != WAIT_OBJECT_0) {
+                TerminateProcess(worker_proc, 0);
+                WaitForSingleObject(worker_proc, 1000);
+            }
+            CloseHandle(worker_proc);
+            worker_proc = NULL;
+        }
+        if (worker_job != NULL) {
+            CloseHandle(worker_job);
+            worker_job = NULL;
+        }
+#else
         if (worker_pid > 0) {
             send_simple_cmd(KV2_CMD_QUIT, nullptr, 0);
         }
-        if (worker_stdin_fd >= 0) { close(worker_stdin_fd); worker_stdin_fd = -1; }
-        if (worker_stdout_fd >= 0) { close(worker_stdout_fd); worker_stdout_fd = -1; }
+        {
+            std::lock_guard<std::mutex> lk(worker_io_mtx);
+            if (worker_stdin_fd >= 0) { close(worker_stdin_fd); worker_stdin_fd = -1; }
+            if (worker_stdout_fd >= 0) { close(worker_stdout_fd); worker_stdout_fd = -1; }
+        }
         if (worker_pid > 0) {
             int status = 0;
             for (int i = 0; i < 20; ++i) {
@@ -458,6 +782,7 @@ struct Kv2Device {
                 worker_pid = -1;
             }
         }
+#endif
     }
 
     int acquire_free_slot_locked() {
@@ -585,6 +910,8 @@ struct Kv2Device {
         const bool want_bidx = (cfg.stream_flags & KV2_STREAM_BODY_INDEX) != 0;
         const size_t resp_body_bytes = 0x1890u + (want_bidx ? kDepthCount : 0u);
         std::vector<uint8_t> raw_resp(resp_body_bytes);
+        const size_t tx_total_bytes = sizeof(WireHeader) + sizeof(WireFramePrefix) + kDepthCount * 4u;
+        std::vector<uint8_t> tx_buf(tx_total_bytes);
 
         while (running.load(std::memory_order_relaxed)) {
             int slot_idx = -1;
@@ -610,7 +937,7 @@ struct Kv2Device {
             bool ok = false;
             {
                 std::lock_guard<std::mutex> iolk(worker_io_mtx);
-                if (worker_stdin_fd >= 0 && worker_stdout_fd >= 0) {
+                if (worker_pipes_ready()) {
                     uint32_t fidx = ++worker_frame_counter;
                     uint32_t flags = KV2_FLAG_HAS_IR_FRAME | (want_bidx ? KV2_FLAG_WANT_BODY_INDEX : 0u);
                     uint32_t plen = (uint32_t)(sizeof(WireFramePrefix) + kDepthCount * 2u + kDepthCount * 2u);
@@ -618,6 +945,15 @@ struct Kv2Device {
                     WireHeader hdr{KV2_REQ_MAGIC, KV2_CMD_PROCESS_FRAME, plen, flags};
                     WireFramePrefix pfx{fidx, {0.0f, -1.0f, 0.0f, 0.0f}};
 
+                    bool write_ok = false;
+#ifdef _WIN32
+                    size_t off = 0;
+                    memcpy(tx_buf.data() + off, &hdr, sizeof(hdr)); off += sizeof(hdr);
+                    memcpy(tx_buf.data() + off, &pfx, sizeof(pfx)); off += sizeof(pfx);
+                    memcpy(tx_buf.data() + off, slot.depth_mm.data(), kDepthCount * sizeof(uint16_t)); off += kDepthCount * sizeof(uint16_t);
+                    memcpy(tx_buf.data() + off, slot.ir.data(), kDepthCount * sizeof(uint16_t)); off += kDepthCount * sizeof(uint16_t);
+                    write_ok = write_exact_handle(worker_stdin_wr, tx_buf.data(), off);
+#else
                     struct iovec iov[4];
                     iov[0].iov_base = &hdr;                 iov[0].iov_len = sizeof(hdr);
                     iov[1].iov_base = &pfx;                 iov[1].iov_len = sizeof(pfx);
@@ -626,25 +962,24 @@ struct Kv2Device {
 
                     size_t total_to_write = sizeof(hdr) + plen;
                     ssize_t w = ::writev(worker_stdin_fd, iov, 4);
-                    bool write_ok = false;
                     if (w == (ssize_t)total_to_write) {
                         write_ok = true;
                     } else if (w >= 0) {
-                        std::vector<uint8_t> flat(total_to_write);
                         size_t off = 0;
                         for (int k = 0; k < 4; ++k) {
-                            memcpy(flat.data() + off, iov[k].iov_base, iov[k].iov_len);
+                            memcpy(tx_buf.data() + off, iov[k].iov_base, iov[k].iov_len);
                             off += iov[k].iov_len;
                         }
-                        write_ok = write_exact_fd(worker_stdin_fd, flat.data() + w, total_to_write - (size_t)w);
+                        write_ok = write_exact_fd(worker_stdin_fd, tx_buf.data() + w, total_to_write - (size_t)w);
                     }
+#endif
 
                     WireHeader rhdr{};
                     if (write_ok &&
-                        read_exact_fd(worker_stdout_fd, &rhdr, sizeof(rhdr)) &&
+                        read_worker_bytes(&rhdr, sizeof(rhdr)) &&
                         rhdr.magic == KV2_RESP_MAGIC &&
                         rhdr.payload_len == resp_body_bytes &&
-                        read_exact_fd(worker_stdout_fd, raw_resp.data(), resp_body_bytes)) {
+                        read_worker_bytes(raw_resp.data(), resp_body_bytes)) {
                         ok = true;
                     }
                 }
@@ -744,7 +1079,7 @@ struct Kv2Device {
 
 extern "C" {
 
-void kv2_default_config(Kv2Config* out_cfg) {
+KV2_API void kv2_default_config(Kv2Config* out_cfg) {
     if (!out_cfg) return;
     memset(out_cfg, 0, sizeof(*out_cfg));
     out_cfg->pipeline = KV2_PIPELINE_AUTO;
@@ -752,10 +1087,13 @@ void kv2_default_config(Kv2Config* out_cfg) {
     out_cfg->mirror_skeleton = 0;
 }
 
-Kv2Device* kv2_open(const Kv2Config* user_cfg, char* err_buf, size_t err_cap) {
+KV2_API Kv2Device* kv2_open(const Kv2Config* user_cfg, char* err_buf, size_t err_cap) {
     ignore_sigpipe_once();
-    // Keep kernel usbfs URB pool (~6.8 MB) safely below Ubuntu's default 16 MB usbfs_memory_mb limit
+#ifndef _WIN32
+    // Keep kernel usbfs URB pool (~6.8 MB) safely below Ubuntu's default 16 MB usbfs_memory_mb limit.
+    // On Windows, libfreenect2 uses its own 8x64 iso transfer pool tuned for the 64-handle poll() limit.
     setenv("LIBFREENECT2_IR_TRANSFERS", "24", 0);
+#endif
     libfreenect2::setGlobalLogger(libfreenect2::createConsoleLogger(libfreenect2::Logger::Warning));
 
     auto dev = std::make_unique<Kv2Device>();
@@ -766,37 +1104,54 @@ Kv2Device* kv2_open(const Kv2Config* user_cfg, char* err_buf, size_t err_cap) {
         kv2_default_config(&dev->cfg);
     }
 
-    // Resolve paths for Wine64 + vvtechs_worker.exe
-    const char* home = getenv("HOME");
-    std::string home_dir = home ? home : "/root";
     std::string lib_dir = shared_lib_dir();
     std::string repo_guess = dirname_of(lib_dir);
 
     if (dev->cfg.worker_exe && dev->cfg.worker_exe[0]) {
-        dev->worker_exe_path = dev->cfg.worker_exe;
+        dev->worker_exe_path = canonical_path(dev->cfg.worker_exe);
     } else if (getenv("KV2_WORKER_EXE")) {
-        dev->worker_exe_path = getenv("KV2_WORKER_EXE");
+        dev->worker_exe_path = canonical_path(getenv("KV2_WORKER_EXE"));
     } else {
-        std::vector<std::string> candidates = {
-            repo_guess + "/dist/kinectv2_linux_bundle/vvtechs_worker.exe",
-            lib_dir + "/../dist/kinectv2_linux_bundle/vvtechs_worker.exe",
-            "./dist/kinectv2_linux_bundle/vvtechs_worker.exe"
-        };
+        std::vector<std::string> candidates;
+#ifdef _WIN32
+        const char* local_appdata = getenv("LOCALAPPDATA");
+        if (local_appdata && local_appdata[0]) {
+            std::string rt = std::string(local_appdata) + "\\kinectv2-runtime";
+            candidates.push_back(rt + "\\dist\\kinectv2_windows_bundle\\vvtechs_worker.exe");
+            candidates.push_back(rt + "\\dist\\kinectv2_linux_bundle\\vvtechs_worker.exe");
+            candidates.push_back(rt + "\\bundle\\vvtechs_worker.exe");
+        }
+        candidates.push_back(repo_guess + "\\dist\\kinectv2_windows_bundle\\vvtechs_worker.exe");
+        candidates.push_back(repo_guess + "\\dist\\kinectv2_linux_bundle\\vvtechs_worker.exe");
+        candidates.push_back(lib_dir + "\\..\\dist\\kinectv2_windows_bundle\\vvtechs_worker.exe");
+        candidates.push_back(lib_dir + "\\..\\dist\\kinectv2_linux_bundle\\vvtechs_worker.exe");
+        candidates.push_back(".\\dist\\kinectv2_windows_bundle\\vvtechs_worker.exe");
+        candidates.push_back(".\\dist\\kinectv2_linux_bundle\\vvtechs_worker.exe");
+#else
+        const char* home = getenv("HOME");
+        std::string home_dir = home ? home : "/root";
+        candidates.push_back(repo_guess + "/dist/kinectv2_linux_bundle/vvtechs_worker.exe");
+        candidates.push_back(lib_dir + "/../dist/kinectv2_linux_bundle/vvtechs_worker.exe");
+        candidates.push_back(home_dir + "/.local/share/kinectv2-runtime/dist/kinectv2_linux_bundle/vvtechs_worker.exe");
+        candidates.push_back("./dist/kinectv2_linux_bundle/vvtechs_worker.exe");
+#endif
         for (const auto& c : candidates) {
             if (file_exists(c)) {
-                char rb[4096];
-                dev->worker_exe_path = realpath(c.c_str(), rb) ? rb : c;
+                dev->worker_exe_path = canonical_path(c);
                 break;
             }
         }
     }
 
     if (dev->cfg.dll_dir && dev->cfg.dll_dir[0]) {
-        dev->dll_dir_path = dev->cfg.dll_dir;
+        dev->dll_dir_path = canonical_path(dev->cfg.dll_dir);
     } else if (!dev->worker_exe_path.empty()) {
         dev->dll_dir_path = dirname_of(dev->worker_exe_path);
     }
 
+#ifndef _WIN32
+    const char* home = getenv("HOME");
+    std::string home_dir = home ? home : "/root";
     if (dev->cfg.wine_binary && dev->cfg.wine_binary[0]) {
         dev->wine_bin_path = dev->cfg.wine_binary;
     } else if (file_exists(home_dir + "/.local/bin/wine64")) {
@@ -810,6 +1165,7 @@ Kv2Device* kv2_open(const Kv2Config* user_cfg, char* err_buf, size_t err_cap) {
     } else if (file_exists(home_dir + "/.wine-kinectv2")) {
         dev->wineprefix_path = home_dir + "/.wine-kinectv2";
     }
+#endif
 
     if ((dev->cfg.stream_flags & KV2_STREAM_BODY) && !file_exists(dev->worker_exe_path)) {
         set_err(err_buf, err_cap, "vvtechs_worker.exe not found (pass Kv2Config.worker_exe or set KV2_WORKER_EXE)");
@@ -861,7 +1217,15 @@ Kv2Device* kv2_open(const Kv2Config* user_cfg, char* err_buf, size_t err_cap) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(800));
                 continue;
             }
+#ifdef _WIN32
+            set_err(
+                err_buf,
+                err_cap,
+                "No Kinect v2 USB 3.0 sensor detected by libfreenect2 (on Windows, install UsbDk or bind libusbK to Xbox NUI Sensor composite parent VID 045E PID 02C4/02D8 via Zadig)"
+            );
+#else
             set_err(err_buf, err_cap, "No Kinect v2 USB 3.0 sensor detected by libfreenect2");
+#endif
             return nullptr;
         }
         dev->serial_str = (dev->cfg.serial && dev->cfg.serial[0])
@@ -922,7 +1286,7 @@ Kv2Device* kv2_open(const Kv2Config* user_cfg, char* err_buf, size_t err_cap) {
     return dev.release();
 }
 
-int kv2_start(Kv2Device* dev, char* err_buf, size_t err_cap) {
+KV2_API int kv2_start(Kv2Device* dev, char* err_buf, size_t err_cap) {
     if (!dev) return -1;
     if (dev->running.load()) return 0;
 
@@ -962,7 +1326,7 @@ int kv2_start(Kv2Device* dev, char* err_buf, size_t err_cap) {
     return 0;
 }
 
-void kv2_stop(Kv2Device* dev) {
+KV2_API void kv2_stop(Kv2Device* dev) {
     if (!dev) return;
     if (!dev->running.exchange(false)) return;
 
@@ -979,7 +1343,7 @@ void kv2_stop(Kv2Device* dev) {
     }
 }
 
-void kv2_close(Kv2Device* dev) {
+KV2_API void kv2_close(Kv2Device* dev) {
     if (!dev) return;
     kv2_stop(dev);
     if (dev->f2_dev) {
@@ -997,7 +1361,7 @@ void kv2_close(Kv2Device* dev) {
     delete dev;
 }
 
-int kv2_wait_frame(Kv2Device* dev, uint64_t last_seq, int32_t timeout_ms, Kv2FrameView* out_frame) {
+KV2_API int kv2_wait_frame(Kv2Device* dev, uint64_t last_seq, int32_t timeout_ms, Kv2FrameView* out_frame) {
     if (!dev || !out_frame) return -1;
     std::unique_lock<std::mutex> lk(dev->pool_mtx);
     auto pred = [&]() {
@@ -1020,7 +1384,7 @@ int kv2_wait_frame(Kv2Device* dev, uint64_t last_seq, int32_t timeout_ms, Kv2Fra
     return 1;
 }
 
-int kv2_get_latest_frame(Kv2Device* dev, Kv2FrameView* out_frame) {
+KV2_API int kv2_get_latest_frame(Kv2Device* dev, Kv2FrameView* out_frame) {
     if (!dev || !out_frame) return -1;
     std::lock_guard<std::mutex> lk(dev->pool_mtx);
     int idx = dev->latest_published_slot;
@@ -1029,7 +1393,7 @@ int kv2_get_latest_frame(Kv2Device* dev, Kv2FrameView* out_frame) {
     return 1;
 }
 
-void kv2_release_frame(Kv2Device* dev, Kv2FrameView* frame) {
+KV2_API void kv2_release_frame(Kv2Device* dev, Kv2FrameView* frame) {
     if (!dev || !frame) return;
     int idx = frame->_slot_id;
     if (idx >= 0 && idx < kNumSlots) {
@@ -1047,31 +1411,36 @@ void kv2_release_frame(Kv2Device* dev, Kv2FrameView* frame) {
     frame->body_index = nullptr;
 }
 
-int kv2_reset_skeleton(Kv2Device* dev) {
+KV2_API int kv2_reset_skeleton(Kv2Device* dev) {
     if (!dev) return -1;
     dev->reset_requested.store(true);
     return 0;
 }
 
-void kv2_set_registered_color_enabled(Kv2Device* dev, int enabled) {
+KV2_API void kv2_set_registered_color_enabled(Kv2Device* dev, int enabled) {
     if (!dev) return;
     dev->reg_enabled_atomic.store(enabled != 0, std::memory_order_relaxed);
 }
 
-void kv2_get_memory_rss_mb(const Kv2Device* dev, float* out_host_rss_mb, float* out_worker_rss_mb) {
+KV2_API void kv2_get_memory_rss_mb(const Kv2Device* dev, float* out_host_rss_mb, float* out_worker_rss_mb) {
+#ifdef _WIN32
+    if (out_host_rss_mb) *out_host_rss_mb = read_handle_rss_mb(GetCurrentProcess());
+    if (out_worker_rss_mb) *out_worker_rss_mb = (dev && dev->worker_proc != NULL) ? read_handle_rss_mb(dev->worker_proc) : 0.0f;
+#else
     if (out_host_rss_mb) *out_host_rss_mb = read_pid_rss_mb(0);
     if (out_worker_rss_mb) *out_worker_rss_mb = (dev && dev->worker_pid > 0) ? read_pid_rss_mb(dev->worker_pid) : 0.0f;
+#endif
 }
 
-const char* kv2_get_serial(const Kv2Device* dev) {
+KV2_API const char* kv2_get_serial(const Kv2Device* dev) {
     return dev ? dev->serial_str.c_str() : "";
 }
 
-const char* kv2_get_pipeline_name(const Kv2Device* dev) {
+KV2_API const char* kv2_get_pipeline_name(const Kv2Device* dev) {
     return dev ? dev->pipeline_name.c_str() : "";
 }
 
-void kv2_get_intrinsics(const Kv2Device* dev, Kv2IrIntrinsics* out_ir, Kv2ColorIntrinsics* out_color) {
+KV2_API void kv2_get_intrinsics(const Kv2Device* dev, Kv2IrIntrinsics* out_ir, Kv2ColorIntrinsics* out_color) {
     if (!dev) return;
     if (out_ir) {
         out_ir->fx = dev->ir_params.fx;
@@ -1092,17 +1461,17 @@ void kv2_get_intrinsics(const Kv2Device* dev, Kv2IrIntrinsics* out_ir, Kv2ColorI
     }
 }
 
-void kv2_project_camera_to_depth(const Kv2Device* dev, const float pos_xyz[3], float out_uv[2]) {
+KV2_API void kv2_project_camera_to_depth(const Kv2Device* dev, const float pos_xyz[3], float out_uv[2]) {
     if (!dev || !pos_xyz || !out_uv) return;
     dev->project_to_depth(pos_xyz, out_uv);
 }
 
-void kv2_project_camera_to_color(const Kv2Device* dev, const float pos_xyz[3], float out_uv[2]) {
+KV2_API void kv2_project_camera_to_color(const Kv2Device* dev, const float pos_xyz[3], float out_uv[2]) {
     if (!dev || !pos_xyz || !out_uv) return;
     dev->project_to_color(pos_xyz, out_uv);
 }
 
-int kv2_deproject_depth_to_camera(const Kv2Device* dev, int dx, int dy, float depth_mm, float out_xyz[3]) {
+KV2_API int kv2_deproject_depth_to_camera(const Kv2Device* dev, int dx, int dy, float depth_mm, float out_xyz[3]) {
     if (!dev || !dev->has_calib || !out_xyz || depth_mm <= 1.0f) return -1;
     int col = dev->cfg.mirror_skeleton ? (KV2_DEPTH_WIDTH - 1 - dx) : dx;
     float xd = ((float)col - dev->ir_params.cx) / dev->ir_params.fx;
@@ -1127,7 +1496,7 @@ int kv2_deproject_depth_to_camera(const Kv2Device* dev, int dx, int dy, float de
     return 0;
 }
 
-int kv2_map_depth_to_color(const Kv2Device* dev, int dx, int dy, float depth_mm, float out_color_uv[2]) {
+KV2_API int kv2_map_depth_to_color(const Kv2Device* dev, int dx, int dy, float depth_mm, float out_color_uv[2]) {
     float xyz[3];
     if (kv2_deproject_depth_to_camera(dev, dx, dy, depth_mm, xyz) != 0) {
         return -1;
@@ -1136,7 +1505,7 @@ int kv2_map_depth_to_color(const Kv2Device* dev, int dx, int dy, float depth_mm,
     return 0;
 }
 
-const char* kv2_joint_name(int joint_index) {
+KV2_API const char* kv2_joint_name(int joint_index) {
     if (joint_index < 0 || joint_index >= KV2_JOINT_COUNT) return "Unknown";
     return kJointNames[joint_index];
 }
