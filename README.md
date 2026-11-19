@@ -107,7 +107,7 @@ python3 -m venv .venv
 `pykinectskel2` also builds natively on Windows x64 (`kinectv2_sdk.dll` + `freenect2.dll` + native Win32 `vvtechs_worker.exe` pipes), bypassing `KinectService.exe`:
 
 1. Install **UsbDk** (x64) or bind **libusbK** via Zadig to `Xbox NUI Sensor (Composite Parent)` (`VID 045E`, `PID 02C4` / `02D8`) so Windows `libfreenect2` can claim the USB 3.0 sensor directly.
-2. Build and stage `%LOCALAPPDATA%\kinectv2-runtime` (`bin\kinectv2_sdk.dll`, `freenect2\bin\freenect2.dll`, and `dist\kinectv2_windows_bundle\vvtechs_worker.exe`):
+2. Build and stage `%LOCALAPPDATA%\kinectv2-runtime` (`bin\kinectv2_sdk.dll`, `freenect2\bin\freenect2.dll`, and `dist\kinectv2_windows_bundle\vvtechs_worker.exe` — uses `uv` + `ziglang`, no Visual Studio / MSVC required):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_sdk.ps1

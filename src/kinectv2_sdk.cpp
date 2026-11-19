@@ -145,7 +145,7 @@ std::wstring quote_win32_arg(const std::wstring& arg) {
 }
 
 float read_handle_rss_mb(HANDLE hproc) {
-    if (!hproc || hproc == INVALID_HANDLE_VALUE) return 0.0f;
+    if (!hproc) return 0.0f;
     PROCESS_MEMORY_COUNTERS pmc{};
     pmc.cb = sizeof(pmc);
     if (!GetProcessMemoryInfo(hproc, &pmc, sizeof(pmc))) return 0.0f;

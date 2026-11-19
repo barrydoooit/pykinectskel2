@@ -104,7 +104,7 @@ python3 -m venv .venv
 `pykinectskel2` 同样支持在 Windows x64 原生编译运行（`kinectv2_sdk.dll` + `freenect2.dll` + Win32 匿名管道直连 `vvtechs_worker.exe`），无需依赖 `KinectService.exe`：
 
 1. 安装 **UsbDk**（x64），或使用 Zadig 将 `Xbox NUI Sensor (Composite Parent)`（`VID 045E`、`PID 02C4` / `02D8`）绑定为 **libusbK** 驱动，使 `libfreenect2` 可直接打开 USB 3.0 传感器。
-2. 一键编译并部署到 `%LOCALAPPDATA%\kinectv2-runtime`（含 `bin\kinectv2_sdk.dll`、`freenect2\bin\freenect2.dll` 与 `dist\kinectv2_windows_bundle\vvtechs_worker.exe`）：
+2. 一键编译并部署到 `%LOCALAPPDATA%\kinectv2-runtime`（含 `bin\kinectv2_sdk.dll`、`freenect2\bin\freenect2.dll` 与 `dist\kinectv2_windows_bundle\vvtechs_worker.exe`；通过 `uv` + `ziglang` 编译，无需安装 Visual Studio / MSVC）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_sdk.ps1
